@@ -55,10 +55,41 @@ pub struct PendingArchive {
     pub filename: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EventQuery {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub camera_ids: Vec<String>,
+    pub event_types: Vec<String>,
+    pub smart_detect_types: Vec<String>,
+    pub limit: usize,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProtectEvent {
+    #[serde(default, rename = "camera", alias = "cameraId")]
+    pub camera_id: String,
+    pub start: i64,
+    #[serde(default)]
+    pub end: Option<i64>,
+    #[serde(default, rename = "type")]
+    pub event_type: Option<String>,
+    #[serde(default, rename = "smartDetectTypes")]
+    pub smart_detect_types: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct PendingArchiveResponse {
     #[serde(default)]
     data: Vec<PendingArchive>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EventsResponse {
+    Data { data: Vec<ProtectEvent> },
+    List(Vec<ProtectEvent>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -212,6 +243,49 @@ impl ProtectClient {
             .await
             .context("failed to parse pending video archives response")?;
         Ok(body.data)
+    }
+
+    pub async fn events(&self, query: &EventQuery) -> Result<Vec<ProtectEvent>> {
+        let mut url = self.url("/proxy/protect/api/events")?;
+        {
+            let mut query_pairs = url.query_pairs_mut();
+            query_pairs
+                .append_pair("start", &query.start_ms.to_string())
+                .append_pair("end", &query.end_ms.to_string())
+                .append_pair("limit", &query.limit.to_string())
+                .append_pair("offset", &query.offset.to_string())
+                .append_pair("orderDirection", "ASC")
+                .append_pair("withoutDescriptions", "true");
+
+            for camera_id in &query.camera_ids {
+                query_pairs.append_pair("cameras", camera_id);
+            }
+
+            for event_type in &query.event_types {
+                query_pairs.append_pair("types", event_type);
+            }
+
+            for smart_detect_type in &query.smart_detect_types {
+                query_pairs.append_pair("smartDetectTypes", smart_detect_type);
+            }
+        }
+
+        let response = self
+            .http
+            .get(url)
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await
+            .context("failed to fetch Protect events")?;
+
+        let response = ensure_success(response, "fetch events").await?;
+        let body = response
+            .json::<EventsResponse>()
+            .await
+            .context("failed to parse Protect events response")?;
+        Ok(match body {
+            EventsResponse::Data { data } | EventsResponse::List(data) => data,
+        })
     }
 
     fn url(&self, path: &str) -> Result<Url> {
@@ -370,6 +444,32 @@ mod tests {
         let response = serde_json::from_str::<PendingArchiveResponse>("{}").unwrap();
 
         assert!(response.data.is_empty());
+    }
+
+    #[test]
+    fn events_response_deserializes_data_wrapper() {
+        let response = serde_json::from_str::<EventsResponse>(
+            r#"{
+                "data": [
+                    {
+                        "camera": "camera-1",
+                        "start": 1000,
+                        "end": 2000,
+                        "type": "smartDetectZone",
+                        "smartDetectTypes": ["person"]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let EventsResponse::Data { data } = response else {
+            panic!("expected wrapped events");
+        };
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].camera_id, "camera-1");
+        assert_eq!(data[0].event_type.as_deref(), Some("smartDetectZone"));
+        assert_eq!(data[0].smart_detect_types, vec!["person"]);
     }
 
     #[test]

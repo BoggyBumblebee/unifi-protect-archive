@@ -11,7 +11,10 @@ use tokio::time::{sleep, Duration};
 use tracing::info;
 
 use crate::{
-    archiver::{run_once, run_once_with_options, ArchiveOptions, ArchiveRange},
+    archiver::{
+        archive_events_with_options, run_once, run_once_with_options, ArchiveOptions, ArchiveRange,
+        EventArchiveOptions,
+    },
     config::{AuthMethod, Config},
     protect::ProtectClient,
 };
@@ -61,7 +64,57 @@ enum Command {
         #[arg(long)]
         delete_after_archive: bool,
 
-        /// Required with --delete-after-archive because it permanently removes Protect footage.
+        /// Required with destructive delete flags because they permanently remove Protect footage.
+        #[arg(long)]
+        i_understand_this_deletes_protect_footage: bool,
+    },
+
+    /// Archive only clips around Protect events/detections for a time range.
+    ArchiveEvents {
+        #[arg(short, long, default_value = "protect-archive.toml")]
+        config: PathBuf,
+
+        /// Camera ID or camera name to archive. Repeat for multiple cameras.
+        #[arg(long = "camera")]
+        cameras: Vec<String>,
+
+        /// Range start as RFC 3339, for example 2026-06-30T09:00:00Z.
+        #[arg(long)]
+        start: String,
+
+        /// Range end as RFC 3339, for example 2026-06-30T10:00:00+01:00.
+        #[arg(long)]
+        end: String,
+
+        /// Protect event type to include, such as motion or smartDetectZone.
+        #[arg(long = "type")]
+        event_types: Vec<String>,
+
+        /// Smart detection type to include, such as person, vehicle, animal, or package.
+        #[arg(long = "smart-detect-type")]
+        smart_detect_types: Vec<String>,
+
+        /// Seconds to include before each event.
+        #[arg(long, default_value_t = 15)]
+        pre_roll_seconds: u64,
+
+        /// Seconds to include after each event.
+        #[arg(long, default_value_t = 45)]
+        post_roll_seconds: u64,
+
+        /// Merge event clips for the same camera when they are within this many seconds.
+        #[arg(long, default_value_t = 60)]
+        merge_gap_seconds: u64,
+
+        /// Delete each archived event clip range after its archive task is no longer pending.
+        #[arg(long)]
+        delete_after_archive: bool,
+
+        /// After all event clips archive successfully, delete the full selected source range.
+        #[arg(long)]
+        delete_source_range_after_archive: bool,
+
+        /// Required with destructive delete flags because they permanently remove Protect footage.
         #[arg(long)]
         i_understand_this_deletes_protect_footage: bool,
     },
@@ -79,8 +132,7 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "unifi_protect_archive=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -110,6 +162,45 @@ async fn main() -> Result<()> {
                 archives = report.archive_count,
                 deletes = report.delete_count,
                 "archive pass complete"
+            );
+            Ok(())
+        }
+        Command::ArchiveEvents {
+            config,
+            cameras,
+            start,
+            end,
+            event_types,
+            smart_detect_types,
+            pre_roll_seconds,
+            post_roll_seconds,
+            merge_gap_seconds,
+            delete_after_archive,
+            delete_source_range_after_archive,
+            i_understand_this_deletes_protect_footage,
+        } => {
+            let config = Config::load(&config)?;
+            let report = archive_events_with_options(
+                &config,
+                EventArchiveOptions {
+                    camera_filters: cameras,
+                    range: parse_required_range(start, end)?,
+                    event_types,
+                    smart_detect_types,
+                    pre_roll_seconds,
+                    post_roll_seconds,
+                    merge_gap_seconds,
+                    delete_after_archive,
+                    delete_source_range_after_archive,
+                    confirm_delete_after_archive: i_understand_this_deletes_protect_footage,
+                },
+            )
+            .await?;
+            info!(
+                cameras = report.camera_count,
+                archives = report.archive_count,
+                deletes = report.delete_count,
+                "event archive pass complete"
             );
             Ok(())
         }
@@ -176,6 +267,13 @@ fn parse_range(start: Option<String>, end: Option<String>) -> Result<Option<Arch
     }
 }
 
+fn parse_required_range(start: String, end: String) -> Result<ArchiveRange> {
+    Ok(ArchiveRange {
+        start_ms: parse_timestamp_ms(&start, "start")?,
+        end_ms: parse_timestamp_ms(&end, "end")?,
+    })
+}
+
 fn parse_timestamp_ms(value: &str, label: &str) -> Result<i64> {
     let timestamp = OffsetDateTime::parse(value, &Rfc3339)
         .with_context(|| format!("failed to parse --{label}; use RFC 3339 with a timezone"))?;
@@ -225,5 +323,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(range.start_ms, range.end_ms);
+    }
+
+    #[test]
+    fn parse_required_range_accepts_bounds() {
+        let range = parse_required_range(
+            "2026-06-30T09:00:00Z".to_string(),
+            "2026-06-30T09:01:00Z".to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(range.end_ms - range.start_ms, 60_000);
     }
 }

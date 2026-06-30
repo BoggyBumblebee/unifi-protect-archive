@@ -231,10 +231,60 @@ cargo run -- run-once \
   --i-understand-this-deletes-protect-footage
 ```
 
+Archive only clips around Protect events/detections:
+
+```sh
+cargo run -- archive-events \
+  --config protect-archive.local.toml \
+  --camera "Camera Name" \
+  --start "2026-05-01T00:00:00Z" \
+  --end "2026-06-01T00:00:00Z" \
+  --type smartDetectZone \
+  --smart-detect-type person \
+  --smart-detect-type vehicle \
+  --pre-roll-seconds 15 \
+  --post-roll-seconds 45 \
+  --merge-gap-seconds 60
+```
+
+Archive detection clips, then delete the full selected source range after all detection clips archive successfully:
+
+```sh
+cargo run -- archive-events \
+  --config protect-archive.local.toml \
+  --start "2026-05-01T00:00:00Z" \
+  --end "2026-06-01T00:00:00Z" \
+  --type smartDetectZone \
+  --pre-roll-seconds 15 \
+  --post-roll-seconds 45 \
+  --merge-gap-seconds 60 \
+  --delete-source-range-after-archive \
+  --i-understand-this-deletes-protect-footage
+```
+
+For event archiving, `--delete-after-archive` deletes only the archived detection clip windows. `--delete-source-range-after-archive` deletes the entire selected source range for each selected camera, but only after all planned event clips have archived successfully. The tool refuses full source-range deletion if the event query produces no archive clips.
+
 Run continuously:
 
 ```sh
 cargo run -- daemon --config protect-archive.local.toml
+```
+
+## Logging
+
+The CLI logs progress at `info` level by default. Long event archive runs report event pagination, total planned clips, each clip archive, archive completion polling, and the final full source-range delete phase when enabled.
+
+Use `RUST_LOG` to change verbosity:
+
+```sh
+RUST_LOG=info cargo run -- archive-events --config protect-archive.local.toml ...
+RUST_LOG=unifi_protect_archive=debug cargo run -- archive-events --config protect-archive.local.toml ...
+```
+
+For quieter output:
+
+```sh
+RUST_LOG=warn cargo run -- archive-events --config protect-archive.local.toml ...
 ```
 
 ## SonarCloud
@@ -338,6 +388,7 @@ The tool follows the same API shape used by the Protect web UI:
 ```text
 POST /api/auth/login
 GET  /proxy/protect/api/bootstrap
+GET  /proxy/protect/api/events
 POST /proxy/protect/api/cloud-provider/video-archive
 GET  /proxy/protect/api/video-archive/fetch-pending
 DELETE /proxy/protect/api/video?camera=...&start=...&end=...
@@ -346,6 +397,8 @@ DELETE /proxy/protect/api/video?camera=...&start=...&end=...
 Archive requests are deliberately serialized. The tool creates one Protect archive task at a time and, by default, waits until that task is no longer pending before submitting the next task. This avoids overlapping archive work, which can destabilize some consoles.
 
 Deletion, when enabled, is also serialized and runs immediately after the matching archive task is no longer pending. It uses the same camera ID, start timestamp, and end timestamp as the archive request.
+
+Event archiving queries Protect events for the selected cameras and time range, expands each event by pre-roll and post-roll, merges nearby clips for the same camera, then archives each merged clip one at a time. With `--delete-after-archive`, only those merged clip windows are deleted. With `--delete-source-range-after-archive`, the full selected source range is deleted for each selected camera after all event clips archive successfully.
 
 The Protect Video Archiving API is not formally documented by Ubiquiti and may change between Protect releases. This implementation was derived from the Protect web UI bundle on a UniFi OS 5.2.23 / Protect 6.3.1-era console.
 
