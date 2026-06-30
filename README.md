@@ -1,5 +1,12 @@
 # UniFi Protect Archive
 
+[![Build](https://github.com/boggybumblebee/unifi-protect-archive/actions/workflows/build.yml/badge.svg)](https://github.com/boggybumblebee/unifi-protect-archive/actions/workflows/build.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=bugs)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=coverage)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+
 Rust CLI for creating UniFi Protect **Video Archiving** tasks.
 
 This tool does not download recordings to the machine running it. It logs into the local UniFi OS console and calls Protect's built-in archive API so Protect writes the recording archive to a preconfigured storage destination, such as a UniFi Drive/NAS shared drive.
