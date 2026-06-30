@@ -293,3 +293,94 @@ fn redact_auth_body(body: &str) -> String {
 
     value.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_tracks_whether_api_key_was_configured() {
+        let without_key =
+            ProtectClient::new("https://unifi-console.example.invalid", true, None).unwrap();
+        let with_key = ProtectClient::new(
+            "https://unifi-console.example.invalid",
+            true,
+            Some("test-key".to_string()),
+        )
+        .unwrap();
+
+        assert!(!without_key.uses_api_key());
+        assert!(with_key.uses_api_key());
+    }
+
+    #[test]
+    fn client_rejects_invalid_controller_url() {
+        let error = ProtectClient::new("not a url", true, None).unwrap_err();
+
+        assert!(error.to_string().contains("controller URL is not valid"));
+    }
+
+    #[test]
+    fn archive_video_request_uses_protect_field_names() {
+        let request = ArchiveVideoRequest {
+            start: 1,
+            end: 2,
+            filename: "clip.mp4".to_string(),
+            lens: 0,
+            destination: "NAS".to_string(),
+            camera_id: "camera-1".to_string(),
+            archive_type: "rotating".to_string(),
+            channel: 0,
+            fps: None,
+            host: "nas.example.invalid".to_string(),
+            shared_drive: "ProtectArchive".to_string(),
+        };
+
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(json["cameraId"], "camera-1");
+        assert_eq!(json["sharedDrive"], "ProtectArchive");
+        assert_eq!(json["type"], "rotating");
+        assert!(json.get("fps").is_none());
+    }
+
+    #[test]
+    fn bootstrap_deserializes_camera_defaults() {
+        let bootstrap = serde_json::from_str::<Bootstrap>(
+            r#"{
+                "cameras": [
+                    {
+                        "id": "camera-1",
+                        "name": "Front",
+                        "isConnected": true
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(bootstrap.cameras.len(), 1);
+        assert_eq!(bootstrap.cameras[0].id, "camera-1");
+        assert_eq!(bootstrap.cameras[0].is_connected, Some(true));
+        assert_eq!(bootstrap.cameras[0].is_recording, None);
+    }
+
+    #[test]
+    fn pending_archive_response_defaults_missing_data() {
+        let response = serde_json::from_str::<PendingArchiveResponse>("{}").unwrap();
+
+        assert!(response.data.is_empty());
+    }
+
+    #[test]
+    fn redact_auth_body_removes_sensitive_data_field() {
+        let redacted = redact_auth_body(r#"{"meta":{"rc":"error"},"data":{"token":"secret"}}"#);
+
+        assert_eq!(redacted, r#"{"meta":{"rc":"error"}}"#);
+    }
+
+    #[test]
+    fn redact_auth_body_handles_non_json() {
+        assert_eq!(redact_auth_body("not json"), "<redacted auth response>");
+    }
+}

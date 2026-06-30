@@ -100,3 +100,70 @@ impl Config {
         Ok(Credentials { username, password })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+
+    #[test]
+    fn sample_config_round_trips() {
+        let sample = Config::sample().unwrap();
+
+        let config = toml::from_str::<Config>(&sample).unwrap();
+
+        assert_eq!(config.controller, "https://unifi-console.example.invalid");
+        assert_eq!(config.auth_method, AuthMethod::Auto);
+        assert!(!config.verify_tls);
+        assert!(!config.delete_after_archive);
+        assert!(config.delete_after_archive_confirmation.is_empty());
+    }
+
+    #[test]
+    fn load_applies_defaults_for_missing_fields() {
+        let path = temp_config_path();
+        fs::write(
+            &path,
+            r#"
+controller = "https://example.invalid"
+archive_destination = "LOCAL"
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(config.controller, "https://example.invalid");
+        assert_eq!(config.auth_method, AuthMethod::Auto);
+        assert_eq!(config.segment_seconds, 900);
+        assert_eq!(config.archive_host, "nas.example.invalid");
+        assert!(!config.delete_after_archive);
+    }
+
+    #[test]
+    fn load_reports_toml_parse_errors() {
+        let path = temp_config_path();
+        fs::write(&path, "camera_ids = [not quoted]").unwrap();
+
+        let error = Config::load(&path).unwrap_err();
+        fs::remove_file(&path).unwrap();
+
+        assert!(error.to_string().contains("failed to parse config file"));
+    }
+
+    fn temp_config_path() -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "unifi-protect-archive-config-{unique}-{}.toml",
+            std::process::id()
+        ))
+    }
+}
