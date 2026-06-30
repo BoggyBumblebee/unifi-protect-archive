@@ -1,7 +1,7 @@
 # UniFi Protect Archive
 
 [![Build](https://github.com/boggybumblebee/unifi-protect-archive/actions/workflows/build.yml/badge.svg)](https://github.com/boggybumblebee/unifi-protect-archive/actions/workflows/build.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=bugs)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
 [![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=coverage)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
