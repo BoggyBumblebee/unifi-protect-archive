@@ -10,6 +10,7 @@ protect-archive.local.toml
 
 # Logs
 *.log
+lcov.info
 
 # macOS
 .DS_Store

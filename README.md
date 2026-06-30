@@ -230,6 +230,29 @@ Run continuously:
 cargo run -- daemon --config protect-archive.local.toml
 ```
 
+## SonarCloud
+
+This repo includes SonarCloud configuration copied from the shape used by `BoggyBumblebee/squirrel-feed-alphavantage` and adapted for this Rust CLI.
+
+Required GitHub setup:
+
+- Create/import the SonarCloud project with key `boggybumblebee_unifi-protect-archive`.
+- Add a repository secret named `SONAR_TOKEN`.
+
+The workflow runs on pushes to `main`/`master` and on pull requests. It generates `lcov.info` with `cargo-llvm-cov`, then runs the SonarCloud scanner.
+
+Run coverage locally:
+
+```sh
+scripts/coverage.sh
+```
+
+To enforce a local minimum line coverage threshold:
+
+```sh
+COVERAGE_FAIL_UNDER_LINES=80 scripts/coverage.sh
+```
+
 ## Configuration Reference
 
 - `controller`: Base URL for the UniFi OS console.
