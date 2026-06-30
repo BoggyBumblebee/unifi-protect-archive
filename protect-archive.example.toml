@@ -13,4 +13,6 @@ minimum_age_seconds = 120
 poll_seconds = 300
 archive_status_poll_seconds = 15
 wait_for_archive_completion = true
+delete_after_archive = false
+delete_after_archive_confirmation = ""
 verify_tls = false

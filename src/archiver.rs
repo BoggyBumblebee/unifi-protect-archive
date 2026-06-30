@@ -13,17 +13,21 @@ use crate::{
 
 const DEFAULT_LENS: u8 = 0;
 const DEFAULT_CHANNEL: u8 = 0;
+pub const DELETE_CONFIRMATION: &str = "DELETE_PROTECT_FOOTAGE_AFTER_ARCHIVE";
 
 #[derive(Debug, Clone)]
 pub struct ArchiveReport {
     pub camera_count: usize,
     pub archive_count: usize,
+    pub delete_count: usize,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ArchiveOptions {
     pub camera_filters: Vec<String>,
     pub range: Option<ArchiveRange>,
+    pub delete_after_archive: bool,
+    pub confirm_delete_after_archive: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -66,8 +70,10 @@ pub async fn run_once_with_options(
         ArchiveRange { start_ms, end_ms }
     });
     let segment_ms = (config.segment_seconds * 1000) as i64;
+    let delete_after_archive = should_delete_after_archive(config, &options);
 
     let mut archive_count = 0_usize;
+    let mut delete_count = 0_usize;
 
     for camera in &cameras {
         if camera.is_connected == Some(false) {
@@ -83,7 +89,12 @@ pub async fn run_once_with_options(
 
             archive_count += 1;
             if config.wait_for_archive_completion {
-                wait_for_archive_completion(&client, config, &task).await?;
+                wait_for_archive_completion(&client, config, &task, delete_after_archive).await?;
+            }
+
+            if delete_after_archive {
+                delete_archived_segment(&client, camera, start_ms, end_ms).await?;
+                delete_count += 1;
             }
 
             start_ms = end_ms;
@@ -93,6 +104,7 @@ pub async fn run_once_with_options(
     Ok(ArchiveReport {
         camera_count: cameras.len(),
         archive_count,
+        delete_count,
     })
 }
 
@@ -120,7 +132,28 @@ fn validate_config(config: &Config, options: &ArchiveOptions) -> Result<()> {
         }
     }
 
+    if should_delete_after_archive(config, options) {
+        if !config.wait_for_archive_completion {
+            bail!("delete_after_archive requires wait_for_archive_completion = true");
+        }
+
+        if !delete_after_archive_confirmed(config, options) {
+            bail!(
+                "delete_after_archive is destructive; pass --i-understand-this-deletes-protect-footage for run-once or set delete_after_archive_confirmation = \"{DELETE_CONFIRMATION}\" in local config"
+            );
+        }
+    }
+
     Ok(())
+}
+
+fn should_delete_after_archive(config: &Config, options: &ArchiveOptions) -> bool {
+    config.delete_after_archive || options.delete_after_archive
+}
+
+fn delete_after_archive_confirmed(config: &Config, options: &ArchiveOptions) -> bool {
+    options.confirm_delete_after_archive
+        || config.delete_after_archive_confirmation.trim() == DELETE_CONFIRMATION
 }
 
 fn selected_cameras(cameras: Vec<Camera>, requested: &[String]) -> Result<Vec<Camera>> {
@@ -172,8 +205,12 @@ async fn wait_for_archive_completion(
     client: &ProtectClient,
     config: &Config,
     task: &ArchiveTask,
+    require_trackable_archive: bool,
 ) -> Result<()> {
     let Some(file_id) = task.file_id.as_deref() else {
+        if require_trackable_archive {
+            bail!("Protect archive response did not include a fileId; refusing to delete footage");
+        }
         warn!("Protect archive response did not include a fileId; skipping completion wait");
         return Ok(());
     };
@@ -199,6 +236,25 @@ async fn wait_for_archive_completion(
             ),
         }
     }
+}
+
+async fn delete_archived_segment(
+    client: &ProtectClient,
+    camera: &Camera,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<()> {
+    info!(
+        camera_id = %camera.id,
+        camera = %camera.name,
+        start_ms,
+        end_ms,
+        "deleting archived Protect footage"
+    );
+    client
+        .delete_video_range(&camera.id, start_ms, end_ms)
+        .await
+        .with_context(|| format!("failed to delete archived footage for {}", camera.name))
 }
 
 fn archive_request(

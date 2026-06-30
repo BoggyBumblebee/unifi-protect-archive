@@ -164,11 +164,36 @@ impl ProtectClient {
             .await
             .context("failed to request Protect video archive")?;
 
+        self.store_csrf_token(&response)?;
         let response = ensure_success(response, "video archive").await?;
         response
             .json::<ArchiveTask>()
             .await
             .context("failed to parse Protect video archive response")
+    }
+
+    pub async fn delete_video_range(
+        &self,
+        camera_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Result<()> {
+        let mut url = self.url("/proxy/protect/api/video")?;
+        url.query_pairs_mut()
+            .append_pair("camera", camera_id)
+            .append_pair("start", &start_ms.to_string())
+            .append_pair("end", &end_ms.to_string());
+
+        let response = self
+            .with_csrf(self.http.delete(url))?
+            .header(header::ACCEPT, "application/json")
+            .send()
+            .await
+            .context("failed to request Protect video deletion")?;
+
+        self.store_csrf_token(&response)?;
+        ensure_success(response, "delete video range").await?;
+        Ok(())
     }
 
     pub async fn pending_archives(&self) -> Result<Vec<PendingArchive>> {

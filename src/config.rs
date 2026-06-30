@@ -29,6 +29,8 @@ pub struct Config {
     pub poll_seconds: u64,
     pub archive_status_poll_seconds: u64,
     pub wait_for_archive_completion: bool,
+    pub delete_after_archive: bool,
+    pub delete_after_archive_confirmation: String,
     pub verify_tls: bool,
 }
 
@@ -56,6 +58,8 @@ impl Default for Config {
             poll_seconds: 5 * 60,
             archive_status_poll_seconds: 15,
             wait_for_archive_completion: true,
+            delete_after_archive: false,
+            delete_after_archive_confirmation: String::new(),
             verify_tls: true,
         }
     }

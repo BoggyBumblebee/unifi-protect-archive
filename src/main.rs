@@ -56,6 +56,14 @@ enum Command {
         /// Range end as RFC 3339, for example 2026-06-30T10:00:00+01:00.
         #[arg(long)]
         end: Option<String>,
+
+        /// Delete each Protect video range after its archive task is no longer pending.
+        #[arg(long)]
+        delete_after_archive: bool,
+
+        /// Required with --delete-after-archive because it permanently removes Protect footage.
+        #[arg(long)]
+        i_understand_this_deletes_protect_footage: bool,
     },
 
     /// Keep archiving in a polling loop.
@@ -86,16 +94,21 @@ async fn main() -> Result<()> {
             cameras,
             start,
             end,
+            delete_after_archive,
+            i_understand_this_deletes_protect_footage,
         } => {
             let config = Config::load(&config)?;
             let options = ArchiveOptions {
                 camera_filters: cameras,
                 range: parse_range(start, end)?,
+                delete_after_archive,
+                confirm_delete_after_archive: i_understand_this_deletes_protect_footage,
             };
             let report = run_once_with_options(&config, options).await?;
             info!(
                 cameras = report.camera_count,
                 archives = report.archive_count,
+                deletes = report.delete_count,
                 "archive pass complete"
             );
             Ok(())
@@ -176,6 +189,7 @@ async fn daemon(path: PathBuf) -> Result<()> {
             Ok(report) => info!(
                 cameras = report.camera_count,
                 archives = report.archive_count,
+                deletes = report.delete_count,
                 "archive pass complete"
             ),
             Err(error) => tracing::error!(?error, "archive pass failed"),

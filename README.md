@@ -10,7 +10,7 @@ This tool does not download recordings to the machine running it. It logs into t
 - Sends archive requests one at a time.
 - Waits for each archive job to leave the pending queue before submitting the next job.
 - Uses Protect's configured archive destination, such as UniFi Drive/NAS.
-- Does not delete recordings from Protect, cameras, the UDM, or any NVR.
+- Can optionally delete the archived Protect footage after each archive task completes. This is off by default and requires an explicit confirmation flag or local confirmation string.
 
 ## What We Learned
 
@@ -95,6 +95,8 @@ minimum_age_seconds = 120
 poll_seconds = 300
 archive_status_poll_seconds = 15
 wait_for_archive_completion = true
+delete_after_archive = false
+delete_after_archive_confirmation = ""
 verify_tls = false
 ```
 
@@ -143,7 +145,34 @@ Use RFC 3339 timestamps with a timezone:
 2026-06-30T14:38:27+01:00
 ```
 
-### 7. Run a Rolling Archive Pass
+### 7. Optional: Delete After Archiving
+
+Deletion is disabled by default.
+
+When enabled, the tool waits for each Protect archive task to leave the pending queue, then calls Protect's media deletion API for the exact camera and time range that was just archived. This removes that footage from Protect storage. Treat this as permanent.
+
+For a one-off run, both flags are required:
+
+```sh
+cargo run -- run-once \
+  --config protect-archive.local.toml \
+  --camera camera-id-or-camera-name \
+  --start 2026-06-30T13:38:27Z \
+  --end 2026-06-30T13:43:27Z \
+  --delete-after-archive \
+  --i-understand-this-deletes-protect-footage
+```
+
+For daemon use, set both values in `protect-archive.local.toml`:
+
+```toml
+delete_after_archive = true
+delete_after_archive_confirmation = "DELETE_PROTECT_FOOTAGE_AFTER_ARCHIVE"
+```
+
+The tool refuses to delete if `wait_for_archive_completion = false` or if Protect's archive response cannot be tracked with a `fileId`.
+
+### 8. Run a Rolling Archive Pass
 
 With `lookback_seconds = 3600`, this archives the previous hour, stopping short of very recent footage by `minimum_age_seconds`:
 
@@ -151,7 +180,7 @@ With `lookback_seconds = 3600`, this archives the previous hour, stopping short 
 cargo run -- run-once --config protect-archive.local.toml
 ```
 
-### 8. Run Continuously
+### 9. Run Continuously
 
 ```sh
 cargo run -- daemon --config protect-archive.local.toml
@@ -183,6 +212,18 @@ cargo run -- run-once \
   --end "2026-06-30T10:00:00+01:00"
 ```
 
+Archive and then delete that exact Protect time range:
+
+```sh
+cargo run -- run-once \
+  --config protect-archive.local.toml \
+  --camera "Camera Name" \
+  --start "2026-06-30T09:00:00+01:00" \
+  --end "2026-06-30T10:00:00+01:00" \
+  --delete-after-archive \
+  --i-understand-this-deletes-protect-footage
+```
+
 Run continuously:
 
 ```sh
@@ -204,6 +245,8 @@ cargo run -- daemon --config protect-archive.local.toml
 - `lookback_seconds`: Rolling lookback used when no explicit `--start`/`--end` is provided.
 - `minimum_age_seconds`: Avoid archiving very recent footage that Protect may still be writing.
 - `wait_for_archive_completion`: Keep `true` to submit the next task only after the previous task is no longer pending.
+- `delete_after_archive`: When `true`, delete each archived camera/time range from Protect after the archive task is no longer pending. Defaults to `false`.
+- `delete_after_archive_confirmation`: Must be exactly `DELETE_PROTECT_FOOTAGE_AFTER_ARCHIVE` for daemon deletion.
 - `archive_status_poll_seconds`: Poll interval for pending archive status.
 - `poll_seconds`: Delay between daemon archive passes.
 - `verify_tls`: Keep `true` for valid certificates; set `false` for a local self-signed console.
@@ -265,8 +308,15 @@ POST /api/auth/login
 GET  /proxy/protect/api/bootstrap
 POST /proxy/protect/api/cloud-provider/video-archive
 GET  /proxy/protect/api/video-archive/fetch-pending
+DELETE /proxy/protect/api/video?camera=...&start=...&end=...
 ```
 
 Archive requests are deliberately serialized. The tool creates one Protect archive task at a time and, by default, waits until that task is no longer pending before submitting the next task. This avoids overlapping archive work, which can destabilize some consoles.
 
+Deletion, when enabled, is also serialized and runs immediately after the matching archive task is no longer pending. It uses the same camera ID, start timestamp, and end timestamp as the archive request.
+
 The Protect Video Archiving API is not formally documented by Ubiquiti and may change between Protect releases. This implementation was derived from the Protect web UI bundle on a UniFi OS 5.2.23 / Protect 6.3.1-era console.
+
+## License
+
+MIT. See [LICENSE.md](LICENSE.md).
