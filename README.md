@@ -1,11 +1,11 @@
 # UniFi Protect Archive
 
 [![Build](https://github.com/boggybumblebee/unifi-protect-archive/actions/workflows/build.yml/badge.svg)](https://github.com/boggybumblebee/unifi-protect-archive/actions/workflows/build.yml)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=bugs)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=coverage)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
-[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=boggybumblebee_unifi-protect-archive&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=boggybumblebee_unifi-protect-archive)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=unifi-protect-archive&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=unifi-protect-archive&metric=bugs)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=unifi-protect-archive&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=unifi-protect-archive&metric=coverage)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=unifi-protect-archive&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=unifi-protect-archive)
 
 Rust CLI for creating UniFi Protect **Video Archiving** tasks.
 
@@ -243,10 +243,12 @@ This repo includes SonarCloud configuration copied from the shape used by `Boggy
 
 Required GitHub setup:
 
-- Create/import the SonarCloud project with key `boggybumblebee_unifi-protect-archive`.
+- Create/import the SonarCloud project with key `unifi-protect-archive`.
 - Add a repository secret named `SONAR_TOKEN`.
 
 The workflow runs on pushes to `main`/`master` and on pull requests. It generates `lcov.info` with `cargo-llvm-cov`, then runs the SonarCloud scanner.
+
+If the SonarCloud badges show `Project not found`, open SonarCloud's project badge page and copy the project badge token into the badge image URLs as `&token=...`. This is a project badge token, not the GitHub `SONAR_TOKEN` analysis secret.
 
 Run coverage locally:
 
