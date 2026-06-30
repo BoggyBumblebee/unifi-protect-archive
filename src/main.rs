@@ -103,7 +103,7 @@ enum Command {
         post_roll_seconds: u64,
 
         /// Merge event clips for the same camera when they are within this many seconds.
-        #[arg(long, default_value_t = 60)]
+        #[arg(long, default_value_t = 30)]
         merge_gap_seconds: u64,
 
         /// Delete each archived event clip range after its archive task is no longer pending.

@@ -244,7 +244,7 @@ cargo run -- archive-events \
   --smart-detect-type vehicle \
   --pre-roll-seconds 15 \
   --post-roll-seconds 30 \
-  --merge-gap-seconds 60
+  --merge-gap-seconds 30
 ```
 
 Archive detection clips, then progressively delete source footage up to each archived clip end:
@@ -257,7 +257,7 @@ cargo run -- archive-events \
   --type smartDetectZone \
   --pre-roll-seconds 15 \
   --post-roll-seconds 30 \
-  --merge-gap-seconds 60 \
+  --merge-gap-seconds 30 \
   --delete-source-range-after-archive \
   --i-understand-this-deletes-protect-footage
 ```
