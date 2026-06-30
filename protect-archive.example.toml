@@ -1,0 +1,16 @@
+controller = "https://unifi-console.example.invalid"
+auth_method = "password"
+api_key_env = "UNIFI_PROTECT_API_KEY"
+username_env = "UNIFI_PROTECT_USERNAME"
+password_env = "UNIFI_PROTECT_PASSWORD"
+archive_destination = "NAS"
+archive_host = "nas.example.invalid"
+archive_shared_drive = "ProtectArchive"
+camera_ids = ["camera-id-or-camera-name"]
+segment_seconds = 900
+lookback_seconds = 3600
+minimum_age_seconds = 120
+poll_seconds = 300
+archive_status_poll_seconds = 15
+wait_for_archive_completion = true
+verify_tls = false
