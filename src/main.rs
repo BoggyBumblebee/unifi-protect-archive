@@ -99,7 +99,7 @@ enum Command {
         pre_roll_seconds: u64,
 
         /// Seconds to include after each event.
-        #[arg(long, default_value_t = 45)]
+        #[arg(long, default_value_t = 30)]
         post_roll_seconds: u64,
 
         /// Merge event clips for the same camera when they are within this many seconds.
@@ -110,7 +110,7 @@ enum Command {
         #[arg(long)]
         delete_after_archive: bool,
 
-        /// After all event clips archive successfully, delete the full selected source range.
+        /// After each event clip archives, delete source footage from range start through that clip end.
         #[arg(long)]
         delete_source_range_after_archive: bool,
 

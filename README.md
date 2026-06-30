@@ -243,11 +243,11 @@ cargo run -- archive-events \
   --smart-detect-type person \
   --smart-detect-type vehicle \
   --pre-roll-seconds 15 \
-  --post-roll-seconds 45 \
+  --post-roll-seconds 30 \
   --merge-gap-seconds 60
 ```
 
-Archive detection clips, then delete the full selected source range after all detection clips archive successfully:
+Archive detection clips, then progressively delete source footage up to each archived clip end:
 
 ```sh
 cargo run -- archive-events \
@@ -256,13 +256,13 @@ cargo run -- archive-events \
   --end "2026-06-01T00:00:00Z" \
   --type smartDetectZone \
   --pre-roll-seconds 15 \
-  --post-roll-seconds 45 \
+  --post-roll-seconds 30 \
   --merge-gap-seconds 60 \
   --delete-source-range-after-archive \
   --i-understand-this-deletes-protect-footage
 ```
 
-For event archiving, `--delete-after-archive` deletes only the archived detection clip windows. `--delete-source-range-after-archive` deletes the entire selected source range for each selected camera, but only after all planned event clips have archived successfully. The tool refuses full source-range deletion if the event query produces no archive clips.
+For event archiving, `--delete-after-archive` deletes only the archived detection clip windows. `--delete-source-range-after-archive` deletes source footage for the same camera from the selected range start through each successfully archived clip's end time. If the job is interrupted, deletion has only progressed through the last successfully archived clip. The tool refuses source deletion if the event query produces no archive clips.
 
 Run continuously:
 
@@ -272,7 +272,7 @@ cargo run -- daemon --config protect-archive.local.toml
 
 ## Logging
 
-The CLI logs progress at `info` level by default. Long event archive runs report event pagination, total planned clips, each clip archive, archive completion polling, and the final full source-range delete phase when enabled.
+The CLI logs progress at `info` level by default. Long event archive runs report event pagination, total planned clips, each clip archive, archive completion polling, and progressive source deletion when enabled.
 
 Use `RUST_LOG` to change verbosity:
 
@@ -398,7 +398,7 @@ Archive requests are deliberately serialized. The tool creates one Protect archi
 
 Deletion, when enabled, is also serialized and runs immediately after the matching archive task is no longer pending. It uses the same camera ID, start timestamp, and end timestamp as the archive request.
 
-Event archiving queries Protect events for the selected cameras and time range, expands each event by pre-roll and post-roll, merges nearby clips for the same camera, then archives each merged clip one at a time. With `--delete-after-archive`, only those merged clip windows are deleted. With `--delete-source-range-after-archive`, the full selected source range is deleted for each selected camera after all event clips archive successfully.
+Event archiving queries Protect events for the selected cameras and time range, expands each event by pre-roll and post-roll, merges nearby clips for the same camera, then archives each merged clip one at a time. With `--delete-after-archive`, only those merged clip windows are deleted. With `--delete-source-range-after-archive`, source footage for that camera is deleted from the selected range start through each successfully archived clip's end time.
 
 The Protect Video Archiving API is not formally documented by Ubiquiti and may change between Protect releases. This implementation was derived from the Protect web UI bundle on a UniFi OS 5.2.23 / Protect 6.3.1-era console.
 

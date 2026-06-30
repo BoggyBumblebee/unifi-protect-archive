@@ -147,6 +147,13 @@ pub async fn archive_events_with_options(
             delete_count += 1;
         }
 
+        if delete_source_range_after_archive {
+            let delete_range = source_delete_range_for_clip(options.range, clip);
+            delete_source_range_until(&client, camera, delete_range.start_ms, delete_range.end_ms)
+                .await?;
+            delete_count += 1;
+        }
+
         info!(
             clip = index + 1,
             total_clips,
@@ -156,29 +163,10 @@ pub async fn archive_events_with_options(
         );
     }
 
-    if delete_source_range_after_archive {
-        if archive_count == 0 {
-            bail!(
-                "refusing to delete the full source range because no event clips were archived; check event filters first"
-            );
-        }
-
-        info!(
-            cameras = cameras.len(),
-            start_ms = options.range.start_ms,
-            end_ms = options.range.end_ms,
-            "deleting full source ranges after event archive"
+    if delete_source_range_after_archive && archive_count == 0 {
+        bail!(
+            "refusing to delete source footage because no event clips were archived; check event filters first"
         );
-        for (index, camera) in cameras.iter().enumerate() {
-            info!(
-                camera = %camera.name,
-                camera_index = index + 1,
-                total_cameras = cameras.len(),
-                "deleting full source range for camera"
-            );
-            delete_source_range(&client, camera, options.range).await?;
-            delete_count += 1;
-        }
     }
 
     Ok(ArchiveReport {
@@ -556,6 +544,13 @@ fn event_clip_window(
     })
 }
 
+fn source_delete_range_for_clip(archive_range: ArchiveRange, clip: &ClipWindow) -> ArchiveRange {
+    ArchiveRange {
+        start_ms: archive_range.start_ms,
+        end_ms: clip.end_ms,
+    }
+}
+
 fn event_matches_filters(event: &ProtectEvent, options: &EventArchiveOptions) -> bool {
     event_type_matches(event, &options.event_types)
         && smart_detect_type_matches(event, &options.smart_detect_types)
@@ -706,22 +701,23 @@ async fn delete_archived_segment(
         .with_context(|| format!("failed to delete archived footage for {}", camera.name))
 }
 
-async fn delete_source_range(
+async fn delete_source_range_until(
     client: &ProtectClient,
     camera: &Camera,
-    archive_range: ArchiveRange,
+    start_ms: i64,
+    end_ms: i64,
 ) -> Result<()> {
     info!(
         camera_id = %camera.id,
         camera = %camera.name,
-        start_ms = archive_range.start_ms,
-        end_ms = archive_range.end_ms,
-        "deleting full Protect source range after event archive"
+        start_ms,
+        end_ms,
+        "deleting Protect source footage through archived clip end"
     );
     client
-        .delete_video_range(&camera.id, archive_range.start_ms, archive_range.end_ms)
+        .delete_video_range(&camera.id, start_ms, end_ms)
         .await
-        .with_context(|| format!("failed to delete source range for {}", camera.name))
+        .with_context(|| format!("failed to delete source footage for {}", camera.name))
 }
 
 fn archive_request(
@@ -1082,6 +1078,24 @@ mod tests {
                 end_ms: 40_000
             }
         );
+    }
+
+    #[test]
+    fn source_delete_range_starts_at_requested_range_and_ends_at_clip_end() {
+        let archive_range = ArchiveRange {
+            start_ms: 10_000,
+            end_ms: 120_000,
+        };
+        let clip = ClipWindow {
+            camera_id: "camera-1".to_string(),
+            start_ms: 40_000,
+            end_ms: 75_000,
+        };
+
+        let delete_range = source_delete_range_for_clip(archive_range, &clip);
+
+        assert_eq!(delete_range.start_ms, 10_000);
+        assert_eq!(delete_range.end_ms, 75_000);
     }
 
     #[test]
