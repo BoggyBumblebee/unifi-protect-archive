@@ -374,7 +374,140 @@ fn redact_auth_body(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::{Arc, Mutex},
+        thread::{self, JoinHandle},
+        time::Duration,
+    };
+
     use super::*;
+
+    struct MockResponse {
+        status: &'static str,
+        headers: Vec<(&'static str, &'static str)>,
+        body: &'static str,
+    }
+
+    impl MockResponse {
+        fn ok_json(body: &'static str) -> Self {
+            Self {
+                status: "200 OK",
+                headers: vec![("content-type", "application/json")],
+                body,
+            }
+        }
+
+        fn no_content() -> Self {
+            Self {
+                status: "204 No Content",
+                headers: Vec::new(),
+                body: "",
+            }
+        }
+
+        fn with_header(mut self, name: &'static str, value: &'static str) -> Self {
+            self.headers.push((name, value));
+            self
+        }
+    }
+
+    struct MockProtectServer {
+        base_url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl MockProtectServer {
+        fn start(responses: Vec<MockResponse>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let thread_requests = Arc::clone(&requests);
+            let handle = thread::spawn(move || {
+                for response in responses {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let request = read_http_request(&mut stream);
+                    thread_requests.lock().unwrap().push(request);
+                    write_http_response(&mut stream, response);
+                }
+            });
+
+            Self {
+                base_url,
+                requests,
+                handle: Some(handle),
+            }
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for MockProtectServer {
+        fn drop(&mut self) {
+            if let Some(handle) = self.handle.take() {
+                handle.join().unwrap();
+            }
+        }
+    }
+
+    fn read_http_request(stream: &mut impl Read) -> String {
+        let mut data = Vec::new();
+        let mut buffer = [0_u8; 1024];
+
+        loop {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            data.extend_from_slice(&buffer[..read]);
+
+            if request_is_complete(&data) {
+                break;
+            }
+        }
+
+        String::from_utf8(data).unwrap()
+    }
+
+    fn request_is_complete(data: &[u8]) -> bool {
+        let Some(header_end) = data.windows(4).position(|window| window == b"\r\n\r\n") else {
+            return false;
+        };
+        let headers = String::from_utf8_lossy(&data[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        data.len() >= header_end + 4 + content_length
+    }
+
+    fn write_http_response(stream: &mut impl Write, response: MockResponse) {
+        let mut raw = format!(
+            "HTTP/1.1 {}\r\ncontent-length: {}\r\nconnection: close\r\n",
+            response.status,
+            response.body.len()
+        );
+        for (name, value) in response.headers {
+            raw.push_str(name);
+            raw.push_str(": ");
+            raw.push_str(value);
+            raw.push_str("\r\n");
+        }
+        raw.push_str("\r\n");
+        raw.push_str(response.body);
+
+        stream.write_all(raw.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    }
 
     #[test]
     fn client_tracks_whether_api_key_was_configured() {
@@ -422,6 +555,179 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://unifi-console.example.invalid/proxy/protect/api/bootstrap"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_methods_send_expected_requests_and_parse_responses() {
+        let server = MockProtectServer::start(vec![
+            MockResponse::ok_json("{}").with_header("x-csrf-token", "login-token"),
+            MockResponse::ok_json(
+                r#"{"cameras":[{"id":"camera-1","name":"Front","isConnected":true,"isRecording":true}]}"#,
+            ),
+            MockResponse::ok_json(r#"{"fileId":"archive-1","filename":"clip.mp4"}"#)
+                .with_header("x-updated-csrf-token", "archive-token"),
+            MockResponse::no_content(),
+            MockResponse::ok_json(
+                r#"{"data":[{"id":"archive-1","status":"uploading","filename":"clip.mp4"}]}"#,
+            ),
+            MockResponse::ok_json(
+                r#"{"data":[{"camera":"camera-1","start":1000,"end":2000,"type":"motion"}]}"#,
+            ),
+        ]);
+        let client = ProtectClient::new(&server.base_url, true, None).unwrap();
+
+        client
+            .login(&Credentials {
+                username: "service".to_string(),
+                password: "secret".to_string(),
+            })
+            .await
+            .unwrap();
+        let cameras = client.cameras().await.unwrap();
+        let task = client
+            .archive_video_to_provider(&ArchiveVideoRequest {
+                start: 1000,
+                end: 2000,
+                filename: "clip.mp4".to_string(),
+                lens: 0,
+                destination: "NAS".to_string(),
+                camera_id: "camera-1".to_string(),
+                archive_type: "rotating".to_string(),
+                channel: 0,
+                fps: None,
+                host: "nas.example.invalid".to_string(),
+                shared_drive: "ProtectArchive".to_string(),
+            })
+            .await
+            .unwrap();
+        client
+            .delete_video_range("camera-1", 1000, 2000)
+            .await
+            .unwrap();
+        let pending = client.pending_archives().await.unwrap();
+        let events = client
+            .events(&EventQuery {
+                start_ms: 1000,
+                end_ms: 2000,
+                camera_ids: vec!["camera-1".to_string(), "camera-2".to_string()],
+                event_types: vec!["motion".to_string()],
+                smart_detect_types: vec!["person".to_string()],
+                limit: 50,
+                offset: 10,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(cameras[0].name, "Front");
+        assert_eq!(task.file_id.as_deref(), Some("archive-1"));
+        assert_eq!(pending[0].status.as_deref(), Some("uploading"));
+        assert_eq!(events[0].event_type.as_deref(), Some("motion"));
+
+        let requests = server.requests();
+        assert!(requests[0].starts_with("POST /api/auth/login "));
+        assert!(requests[0].contains(r#""username":"service""#));
+        assert!(requests[1].starts_with("GET /proxy/protect/api/bootstrap "));
+        assert!(requests[2].starts_with("POST /proxy/protect/api/cloud-provider/video-archive "));
+        assert!(requests[2].contains("x-csrf-token: login-token"));
+        assert!(requests[2].contains(r#""cameraId":"camera-1""#));
+        assert!(requests[3]
+            .starts_with("DELETE /proxy/protect/api/video?camera=camera-1&start=1000&end=2000 "));
+        assert!(requests[3].contains("x-csrf-token: archive-token"));
+        assert!(requests[4].starts_with("GET /proxy/protect/api/video-archive/fetch-pending "));
+        assert!(requests[5]
+            .starts_with("GET /proxy/protect/api/events?start=1000&end=2000&limit=50&offset=10"));
+        assert!(requests[5].contains("cameras=camera-1"));
+        assert!(requests[5].contains("cameras=camera-2"));
+        assert!(requests[5].contains("types=motion"));
+        assert!(requests[5].contains("smartDetectTypes=person"));
+    }
+
+    #[tokio::test]
+    async fn client_reports_permission_errors_without_parsing_body() {
+        let server = MockProtectServer::start(vec![MockResponse {
+            status: "403 Forbidden",
+            headers: vec![("content-type", "application/json")],
+            body: r#"{"error":"forbidden"}"#,
+        }]);
+        let client = ProtectClient::new(&server.base_url, true, None).unwrap();
+
+        let error = client.cameras().await.unwrap_err();
+
+        assert!(error.to_string().contains("rejected by Protect"));
+    }
+
+    #[tokio::test]
+    async fn login_reports_mfa_requirement() {
+        let server = MockProtectServer::start(vec![MockResponse {
+            status: "500 Internal Server Error",
+            headers: vec![("content-type", "application/json")],
+            body: r#"{"error":"MFA_AUTH_REQUIRED"}"#,
+        }]);
+        let client = ProtectClient::new(&server.base_url, true, None).unwrap();
+
+        let error = client
+            .login(&Credentials {
+                username: "service".to_string(),
+                password: "secret".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("login requires MFA/SSO"));
+    }
+
+    #[tokio::test]
+    async fn login_redacts_failed_auth_response_body() {
+        let server = MockProtectServer::start(vec![MockResponse {
+            status: "500 Internal Server Error",
+            headers: vec![("content-type", "application/json")],
+            body: r#"{"meta":{"rc":"error"},"data":{"token":"secret"}}"#,
+        }]);
+        let client = ProtectClient::new(&server.base_url, true, None).unwrap();
+
+        let error = client
+            .login(&Credentials {
+                username: "service".to_string(),
+                password: "secret".to_string(),
+            })
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("login failed with HTTP 500"));
+        assert!(!message.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn non_auth_errors_include_response_body() {
+        let server = MockProtectServer::start(vec![MockResponse {
+            status: "502 Bad Gateway",
+            headers: vec![("content-type", "application/json")],
+            body: r#"{"error":"bad gateway"}"#,
+        }]);
+        let client = ProtectClient::new(&server.base_url, true, None).unwrap();
+
+        let error = client.pending_archives().await.unwrap_err();
+
+        assert!(error.to_string().contains("HTTP 502 Bad Gateway"));
+        assert!(error.to_string().contains("bad gateway"));
+    }
+
+    #[tokio::test]
+    async fn empty_error_body_reports_status_only() {
+        let server = MockProtectServer::start(vec![MockResponse {
+            status: "500 Internal Server Error",
+            headers: Vec::new(),
+            body: "",
+        }]);
+        let client = ProtectClient::new(&server.base_url, true, None).unwrap();
+
+        let error = client.pending_archives().await.unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "fetch pending video archives failed with HTTP 500 Internal Server Error"
         );
     }
 
