@@ -243,8 +243,24 @@ cargo run -- archive-events \
   --smart-detect-type person \
   --smart-detect-type vehicle \
   --pre-roll-seconds 15 \
-  --post-roll-seconds 30 \
-  --merge-gap-seconds 30
+  --post-roll-seconds 15 \
+  --merge-gap-seconds 60
+```
+
+Plan event archive clips without creating archive tasks or deleting footage:
+
+```sh
+cargo run -- archive-events \
+  --config protect-archive.local.toml \
+  --start "2026-05-01T00:00:00Z" \
+  --end "2026-05-02T00:00:00Z" \
+  --type smartDetectZone \
+  --smart-detect-type person \
+  --pre-roll-seconds 15 \
+  --post-roll-seconds 15 \
+  --merge-gap-seconds 60 \
+  --chunk-days 1 \
+  --dry-run
 ```
 
 Archive detection clips, then progressively delete source footage up to each archived clip end:
@@ -256,13 +272,14 @@ cargo run -- archive-events \
   --end "2026-06-01T00:00:00Z" \
   --type smartDetectZone \
   --pre-roll-seconds 15 \
-  --post-roll-seconds 30 \
-  --merge-gap-seconds 30 \
+  --post-roll-seconds 15 \
+  --merge-gap-seconds 60 \
+  --chunk-days 1 \
   --delete-source-range-after-archive \
   --i-understand-this-deletes-protect-footage
 ```
 
-For event archiving, `--delete-after-archive` deletes only the archived detection clip windows. `--delete-source-range-after-archive` deletes source footage for the same camera from the selected range start through each successfully archived clip's end time. If the job is interrupted, deletion has only progressed through the last successfully archived clip. The tool refuses source deletion if the event query produces no archive clips.
+For event archiving, `--dry-run` fetches events, applies pre/post roll and merge settings, and reports the planned clip count without creating archive tasks or deleting footage. `--chunk-days` splits a large range into day-sized chunks inside one authenticated session. `--delete-after-archive` deletes only the archived detection clip windows. `--delete-source-range-after-archive` deletes source footage for the same camera from the selected range start through each successfully archived clip's end time; when chunking is enabled, the chunk start is used as the deletion start. If the job is interrupted, deletion has only progressed through the last successfully archived clip. The tool refuses source deletion if the event query produces no archive clips.
 
 Run continuously:
 

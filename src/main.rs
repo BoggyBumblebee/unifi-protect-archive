@@ -99,12 +99,20 @@ enum Command {
         pre_roll_seconds: u64,
 
         /// Seconds to include after each event.
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 15)]
         post_roll_seconds: u64,
 
         /// Merge event clips for the same camera when they are within this many seconds.
-        #[arg(long, default_value_t = 30)]
+        #[arg(long, default_value_t = 60)]
         merge_gap_seconds: u64,
+
+        /// Split the selected range into day-sized chunks inside one authenticated session.
+        #[arg(long)]
+        chunk_days: Option<u64>,
+
+        /// Plan event clips without creating archive tasks or deleting footage.
+        #[arg(long)]
+        dry_run: bool,
 
         /// Delete each archived event clip range after its archive task is no longer pending.
         #[arg(long)]
@@ -175,6 +183,8 @@ async fn main() -> Result<()> {
             pre_roll_seconds,
             post_roll_seconds,
             merge_gap_seconds,
+            chunk_days,
+            dry_run,
             delete_after_archive,
             delete_source_range_after_archive,
             i_understand_this_deletes_protect_footage,
@@ -190,18 +200,29 @@ async fn main() -> Result<()> {
                     pre_roll_seconds,
                     post_roll_seconds,
                     merge_gap_seconds,
+                    chunk_days,
+                    dry_run,
                     delete_after_archive,
                     delete_source_range_after_archive,
                     confirm_delete_after_archive: i_understand_this_deletes_protect_footage,
                 },
             )
             .await?;
-            info!(
-                cameras = report.camera_count,
-                archives = report.archive_count,
-                deletes = report.delete_count,
-                "event archive pass complete"
-            );
+            if dry_run {
+                info!(
+                    cameras = report.camera_count,
+                    planned_archives = report.planned_archive_count,
+                    "event archive dry run complete"
+                );
+            } else {
+                info!(
+                    cameras = report.camera_count,
+                    planned_archives = report.planned_archive_count,
+                    archives = report.archive_count,
+                    deletes = report.delete_count,
+                    "event archive pass complete"
+                );
+            }
             Ok(())
         }
         Command::Daemon { config } => daemon(config).await,

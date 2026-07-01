@@ -156,6 +156,87 @@ archive_destination = "LOCAL"
         assert!(error.to_string().contains("failed to parse config file"));
     }
 
+    #[test]
+    fn load_reports_missing_files() {
+        let path = temp_config_path();
+
+        let error = Config::load(&path).unwrap_err();
+
+        assert!(error.to_string().contains("failed to read config file"));
+    }
+
+    #[test]
+    fn api_key_ignores_missing_or_blank_values() {
+        let missing_env = unique_env_name("missing-api-key");
+        let blank_env = unique_env_name("blank-api-key");
+        env::set_var(&blank_env, "   ");
+
+        let missing_config = Config {
+            api_key_env: missing_env,
+            ..Config::default()
+        };
+        let blank_config = Config {
+            api_key_env: blank_env.clone(),
+            ..Config::default()
+        };
+
+        assert_eq!(missing_config.api_key(), None);
+        assert_eq!(blank_config.api_key(), None);
+
+        env::remove_var(blank_env);
+    }
+
+    #[test]
+    fn api_key_reads_configured_environment_variable() {
+        let api_key_env = unique_env_name("api-key");
+        env::set_var(&api_key_env, "test-api-key");
+        let config = Config {
+            api_key_env: api_key_env.clone(),
+            ..Config::default()
+        };
+
+        assert_eq!(config.api_key().as_deref(), Some("test-api-key"));
+
+        env::remove_var(api_key_env);
+    }
+
+    #[test]
+    fn credentials_read_configured_environment_variables() {
+        let username_env = unique_env_name("username");
+        let password_env = unique_env_name("password");
+        env::set_var(&username_env, "service-user");
+        env::set_var(&password_env, "service-password");
+        let config = Config {
+            username_env: username_env.clone(),
+            password_env: password_env.clone(),
+            ..Config::default()
+        };
+
+        let credentials = config.credentials().unwrap();
+
+        assert_eq!(credentials.username, "service-user");
+        assert_eq!(credentials.password, "service-password");
+
+        env::remove_var(username_env);
+        env::remove_var(password_env);
+    }
+
+    #[test]
+    fn credentials_error_mentions_api_key_or_missing_username() {
+        let username_env = unique_env_name("username-missing");
+        let password_env = unique_env_name("password-unused");
+        let config = Config {
+            api_key_env: "TEST_API_KEY_ENV".to_string(),
+            username_env,
+            password_env,
+            ..Config::default()
+        };
+
+        let error = config.credentials().unwrap_err();
+
+        assert!(error.to_string().contains("TEST_API_KEY_ENV"));
+    }
+
     fn temp_config_path() -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -165,5 +246,18 @@ archive_destination = "LOCAL"
             "unifi-protect-archive-config-{unique}-{}.toml",
             std::process::id()
         ))
+    }
+
+    fn unique_env_name(label: &str) -> String {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!(
+            "UNIFI_PROTECT_ARCHIVE_TEST_{}_{}_{}",
+            label.replace('-', "_").to_uppercase(),
+            std::process::id(),
+            unique
+        )
     }
 }

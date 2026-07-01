@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::{
@@ -124,6 +127,7 @@ impl ProtectClient {
             .cookie_store(true)
             .default_headers(default_headers)
             .danger_accept_invalid_certs(!verify_tls)
+            .timeout(Duration::from_secs(60))
             .user_agent(concat!(
                 env!("CARGO_PKG_NAME"),
                 "/",
@@ -395,6 +399,33 @@ mod tests {
     }
 
     #[test]
+    fn client_rejects_api_keys_that_are_invalid_header_values() {
+        let error = ProtectClient::new(
+            "https://unifi-console.example.invalid",
+            true,
+            Some("bad\nkey".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("API key contains invalid header bytes"));
+    }
+
+    #[test]
+    fn client_builds_protect_urls_from_controller_base() {
+        let client =
+            ProtectClient::new("https://unifi-console.example.invalid", true, None).unwrap();
+
+        let url = client.url("/proxy/protect/api/bootstrap").unwrap();
+
+        assert_eq!(
+            url.as_str(),
+            "https://unifi-console.example.invalid/proxy/protect/api/bootstrap"
+        );
+    }
+
+    #[test]
     fn archive_video_request_uses_protect_field_names() {
         let request = ArchiveVideoRequest {
             start: 1,
@@ -416,6 +447,38 @@ mod tests {
         assert_eq!(json["sharedDrive"], "ProtectArchive");
         assert_eq!(json["type"], "rotating");
         assert!(json.get("fps").is_none());
+    }
+
+    #[test]
+    fn archive_video_request_serializes_optional_fps_when_present() {
+        let request = ArchiveVideoRequest {
+            start: 1,
+            end: 2,
+            filename: "clip.mp4".to_string(),
+            lens: 0,
+            destination: "NAS".to_string(),
+            camera_id: "camera-1".to_string(),
+            archive_type: "rotating".to_string(),
+            channel: 0,
+            fps: Some(15),
+            host: "nas.example.invalid".to_string(),
+            shared_drive: "ProtectArchive".to_string(),
+        };
+
+        let json = serde_json::to_value(request).unwrap();
+
+        assert_eq!(json["fps"], 15);
+    }
+
+    #[test]
+    fn archive_task_deserializes_protect_field_names() {
+        let task = serde_json::from_str::<ArchiveTask>(
+            r#"{"fileId":"archive-file","filename":"clip.mp4"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(task.file_id.as_deref(), Some("archive-file"));
+        assert_eq!(task.filename.as_deref(), Some("clip.mp4"));
     }
 
     #[test]
@@ -447,6 +510,19 @@ mod tests {
     }
 
     #[test]
+    fn pending_archive_response_deserializes_data_items() {
+        let response = serde_json::from_str::<PendingArchiveResponse>(
+            r#"{"data":[{"id":"archive-1","status":"uploading","filename":"clip.mp4"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].id, "archive-1");
+        assert_eq!(response.data[0].status.as_deref(), Some("uploading"));
+        assert_eq!(response.data[0].filename.as_deref(), Some("clip.mp4"));
+    }
+
+    #[test]
     fn events_response_deserializes_data_wrapper() {
         let response = serde_json::from_str::<EventsResponse>(
             r#"{
@@ -470,6 +546,28 @@ mod tests {
         assert_eq!(data[0].camera_id, "camera-1");
         assert_eq!(data[0].event_type.as_deref(), Some("smartDetectZone"));
         assert_eq!(data[0].smart_detect_types, vec!["person"]);
+    }
+
+    #[test]
+    fn events_response_deserializes_list_and_camera_id_alias() {
+        let response = serde_json::from_str::<EventsResponse>(
+            r#"[
+                {
+                    "cameraId": "camera-1",
+                    "start": 1000
+                }
+            ]"#,
+        )
+        .unwrap();
+
+        let EventsResponse::List(data) = response else {
+            panic!("expected event list");
+        };
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].camera_id, "camera-1");
+        assert_eq!(data[0].end, None);
+        assert_eq!(data[0].event_type, None);
+        assert!(data[0].smart_detect_types.is_empty());
     }
 
     #[test]

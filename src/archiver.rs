@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{anyhow, bail, Context, Result};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
@@ -14,11 +14,13 @@ use crate::{
 const DEFAULT_LENS: u8 = 0;
 const DEFAULT_CHANNEL: u8 = 0;
 const EVENTS_PAGE_LIMIT: usize = 500;
+const MAX_PENDING_ARCHIVE_FETCH_FAILURES: usize = 5;
 pub const DELETE_CONFIRMATION: &str = "DELETE_PROTECT_FOOTAGE_AFTER_ARCHIVE";
 
 #[derive(Debug, Clone)]
 pub struct ArchiveReport {
     pub camera_count: usize,
+    pub planned_archive_count: usize,
     pub archive_count: usize,
     pub delete_count: usize,
 }
@@ -31,7 +33,7 @@ pub struct ArchiveOptions {
     pub confirm_delete_after_archive: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchiveRange {
     pub start_ms: i64,
     pub end_ms: i64,
@@ -46,6 +48,8 @@ pub struct EventArchiveOptions {
     pub pre_roll_seconds: u64,
     pub post_roll_seconds: u64,
     pub merge_gap_seconds: u64,
+    pub chunk_days: Option<u64>,
+    pub dry_run: bool,
     pub delete_after_archive: bool,
     pub delete_source_range_after_archive: bool,
     pub confirm_delete_after_archive: bool,
@@ -78,6 +82,7 @@ pub async fn run_once_with_options(
 
     Ok(ArchiveReport {
         camera_count: cameras.len(),
+        planned_archive_count: archive_count,
         archive_count,
         delete_count,
     })
@@ -98,8 +103,81 @@ pub async fn archive_events_with_options(
         .iter()
         .map(|camera| camera.id.clone())
         .collect::<Vec<_>>();
-    let events = fetch_events(&client, &options, camera_ids).await?;
-    let clips = event_clip_windows(&events, options.range, &options);
+    let Some(chunk_days) = options.chunk_days else {
+        return archive_event_range(&client, config, &cameras, &options, camera_ids, true).await;
+    };
+
+    archive_event_chunks(&client, config, &cameras, &options, camera_ids, chunk_days).await
+}
+
+async fn archive_event_chunks(
+    client: &ProtectClient,
+    config: &Config,
+    cameras: &[Camera],
+    options: &EventArchiveOptions,
+    camera_ids: Vec<String>,
+    chunk_days: u64,
+) -> Result<ArchiveReport> {
+    let chunk_ms = (chunk_days * 24 * 60 * 60 * 1000) as i64;
+    let chunks = chunk_ranges(options.range, chunk_ms);
+    let mut report = ArchiveReport {
+        camera_count: cameras.len(),
+        planned_archive_count: 0,
+        archive_count: 0,
+        delete_count: 0,
+    };
+
+    info!(
+        chunks = chunks.len(),
+        chunk_days,
+        start_ms = options.range.start_ms,
+        end_ms = options.range.end_ms,
+        "processing event archive range in chunks"
+    );
+
+    for (index, range) in chunks.into_iter().enumerate() {
+        let mut chunk_options = options.clone();
+        chunk_options.range = range;
+        info!(
+            chunk = index + 1,
+            start_ms = range.start_ms,
+            end_ms = range.end_ms,
+            "processing event archive chunk"
+        );
+
+        let chunk_report = archive_event_range(
+            client,
+            config,
+            cameras,
+            &chunk_options,
+            camera_ids.clone(),
+            false,
+        )
+        .await?;
+        report.planned_archive_count += chunk_report.planned_archive_count;
+        report.archive_count += chunk_report.archive_count;
+        report.delete_count += chunk_report.delete_count;
+    }
+
+    if options.delete_source_range_after_archive && !options.dry_run && report.archive_count == 0 {
+        bail!(
+            "refusing to delete source footage because no event clips were archived; check event filters first"
+        );
+    }
+
+    Ok(report)
+}
+
+async fn archive_event_range(
+    client: &ProtectClient,
+    config: &Config,
+    cameras: &[Camera],
+    options: &EventArchiveOptions,
+    camera_ids: Vec<String>,
+    bail_on_empty_source_delete: bool,
+) -> Result<ArchiveReport> {
+    let events = fetch_events(client, options, camera_ids).await?;
+    let clips = event_clip_windows(&events, options.range, options);
     let delete_after_archive = options.delete_after_archive;
     let delete_source_range_after_archive = options.delete_source_range_after_archive;
 
@@ -109,6 +187,25 @@ pub async fn archive_events_with_options(
         clips = clips.len(),
         "planned event archive clips"
     );
+
+    if options.dry_run {
+        info!(
+            event_types = ?event_type_counts(&events),
+            smart_detect_types = ?smart_detect_type_counts(&events),
+            "dry run event summary"
+        );
+        info!(
+            cameras = cameras.len(),
+            planned_archives = clips.len(),
+            "event archive dry run complete"
+        );
+        return Ok(ArchiveReport {
+            camera_count: cameras.len(),
+            planned_archive_count: clips.len(),
+            archive_count: 0,
+            delete_count: 0,
+        });
+    }
 
     let mut archive_count = 0_usize;
     let mut delete_count = 0_usize;
@@ -133,7 +230,7 @@ pub async fn archive_events_with_options(
             "archiving event clip"
         );
         archive_segment(
-            &client,
+            client,
             config,
             camera,
             clip.start_ms,
@@ -149,7 +246,7 @@ pub async fn archive_events_with_options(
 
         if delete_source_range_after_archive {
             let delete_range = source_delete_range_for_clip(options.range, clip);
-            delete_source_range_until(&client, camera, delete_range.start_ms, delete_range.end_ms)
+            delete_source_range_until(client, camera, delete_range.start_ms, delete_range.end_ms)
                 .await?;
             delete_count += 1;
         }
@@ -163,7 +260,7 @@ pub async fn archive_events_with_options(
         );
     }
 
-    if delete_source_range_after_archive && archive_count == 0 {
+    if bail_on_empty_source_delete && delete_source_range_after_archive && archive_count == 0 {
         bail!(
             "refusing to delete source footage because no event clips were archived; check event filters first"
         );
@@ -171,6 +268,7 @@ pub async fn archive_events_with_options(
 
     Ok(ArchiveReport {
         camera_count: cameras.len(),
+        planned_archive_count: clips.len(),
         archive_count,
         delete_count,
     })
@@ -186,9 +284,11 @@ fn validate_event_archive(config: &Config, options: &EventArchiveOptions) -> Res
     validate_archive_settings(config)?;
     validate_range(options.range)?;
     validate_event_delete_mode(options)?;
+    validate_chunk_settings(options)?;
     validate_delete_request(
         config,
-        options.delete_after_archive || options.delete_source_range_after_archive,
+        !options.dry_run
+            && (options.delete_after_archive || options.delete_source_range_after_archive),
         options.confirm_delete_after_archive,
     )
 }
@@ -198,6 +298,14 @@ fn validate_event_delete_mode(options: &EventArchiveOptions) -> Result<()> {
         bail!(
             "--delete-after-archive and --delete-source-range-after-archive cannot be used together"
         );
+    }
+
+    Ok(())
+}
+
+fn validate_chunk_settings(options: &EventArchiveOptions) -> Result<()> {
+    if options.chunk_days == Some(0) {
+        bail!("--chunk-days must be greater than zero");
     }
 
     Ok(())
@@ -348,6 +456,7 @@ async fn archive_camera(
         warn!(camera = %camera.name, "camera is disconnected; skipping");
         return Ok(ArchiveReport {
             camera_count: 1,
+            planned_archive_count: 0,
             archive_count: 0,
             delete_count: 0,
         });
@@ -399,6 +508,7 @@ async fn archive_camera(
 
     Ok(ArchiveReport {
         camera_count: 1,
+        planned_archive_count: archive_count,
         archive_count,
         delete_count,
     })
@@ -551,6 +661,42 @@ fn source_delete_range_for_clip(archive_range: ArchiveRange, clip: &ClipWindow) 
     }
 }
 
+fn chunk_ranges(archive_range: ArchiveRange, chunk_ms: i64) -> Vec<ArchiveRange> {
+    let mut ranges = Vec::new();
+    let mut start_ms = archive_range.start_ms;
+
+    while start_ms < archive_range.end_ms {
+        let end_ms = start_ms.saturating_add(chunk_ms).min(archive_range.end_ms);
+        ranges.push(ArchiveRange { start_ms, end_ms });
+        start_ms = end_ms;
+    }
+
+    ranges
+}
+
+fn event_type_counts(events: &[ProtectEvent]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+
+    for event in events {
+        let event_type = event.event_type.as_deref().unwrap_or("unknown");
+        *counts.entry(event_type.to_string()).or_insert(0) += 1;
+    }
+
+    counts
+}
+
+fn smart_detect_type_counts(events: &[ProtectEvent]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+
+    for event in events {
+        for smart_detect_type in &event.smart_detect_types {
+            *counts.entry(smart_detect_type.clone()).or_insert(0) += 1;
+        }
+    }
+
+    counts
+}
+
 fn event_matches_filters(event: &ProtectEvent, options: &EventArchiveOptions) -> bool {
     event_type_matches(event, &options.event_types)
         && smart_detect_type_matches(event, &options.smart_detect_types)
@@ -659,9 +805,30 @@ async fn wait_for_archive_completion(
         return Ok(());
     };
 
+    let mut pending_fetch_failures = 0_usize;
     loop {
         sleep(TokioDuration::from_secs(config.archive_status_poll_seconds)).await;
-        let pending = client.pending_archives().await?;
+        let pending = match client.pending_archives().await {
+            Ok(pending) => {
+                pending_fetch_failures = 0;
+                pending
+            }
+            Err(error)
+                if is_transient_pending_archive_error(&error)
+                    && pending_fetch_failures < MAX_PENDING_ARCHIVE_FETCH_FAILURES =>
+            {
+                pending_fetch_failures += 1;
+                warn!(
+                    file_id,
+                    attempt = pending_fetch_failures,
+                    max_attempts = MAX_PENDING_ARCHIVE_FETCH_FAILURES,
+                    error = %error,
+                    "retrying transient pending archive fetch failure"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let Some(archive) = pending.iter().find(|archive| archive.id == file_id) else {
             info!(file_id, "archive task is no longer pending");
             return Ok(());
@@ -680,6 +847,22 @@ async fn wait_for_archive_completion(
             ),
         }
     }
+}
+
+fn is_transient_pending_archive_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        [
+            "HTTP 429",
+            "HTTP 502",
+            "HTTP 503",
+            "HTTP 504",
+            "operation timed out",
+            "timed out",
+        ]
+        .iter()
+        .any(|status| message.contains(status))
+    })
 }
 
 async fn delete_archived_segment(
@@ -804,6 +987,8 @@ mod tests {
             pre_roll_seconds: 10,
             post_roll_seconds: 20,
             merge_gap_seconds: 5,
+            chunk_days: None,
+            dry_run: false,
             delete_after_archive: false,
             delete_source_range_after_archive: false,
             confirm_delete_after_archive: false,
@@ -856,6 +1041,18 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("archive_shared_drive"));
+    }
+
+    #[test]
+    fn validate_config_allows_non_nas_without_host_or_shared_drive() {
+        let config = Config {
+            archive_destination: "LOCAL".to_string(),
+            archive_host: String::new(),
+            archive_shared_drive: String::new(),
+            ..config()
+        };
+
+        validate_config(&config, &options()).unwrap();
     }
 
     #[test]
@@ -971,6 +1168,32 @@ mod tests {
     }
 
     #[test]
+    fn validate_event_archive_allows_dry_run_without_delete_confirmation() {
+        let options = EventArchiveOptions {
+            dry_run: true,
+            delete_source_range_after_archive: true,
+            ..event_options()
+        };
+
+        validate_event_archive(&config(), &options).unwrap();
+    }
+
+    #[test]
+    fn validate_event_archive_rejects_reversed_range() {
+        let options = EventArchiveOptions {
+            range: ArchiveRange {
+                start_ms: 20_000,
+                end_ms: 10_000,
+            },
+            ..event_options()
+        };
+
+        let error = validate_event_archive(&config(), &options).unwrap_err();
+
+        assert!(error.to_string().contains("start must be before end"));
+    }
+
+    #[test]
     fn validate_event_archive_rejects_both_delete_modes() {
         let options = EventArchiveOptions {
             delete_after_archive: true,
@@ -982,6 +1205,118 @@ mod tests {
         let error = validate_event_archive(&config(), &options).unwrap_err();
 
         assert!(error.to_string().contains("cannot be used together"));
+    }
+
+    #[test]
+    fn validate_event_archive_rejects_zero_chunk_days() {
+        let options = EventArchiveOptions {
+            chunk_days: Some(0),
+            ..event_options()
+        };
+
+        let error = validate_event_archive(&config(), &options).unwrap_err();
+
+        assert!(error.to_string().contains("chunk-days"));
+    }
+
+    #[test]
+    fn archive_options_override_config_camera_ids_and_range() {
+        let config = Config {
+            camera_ids: vec!["configured-camera".to_string()],
+            ..config()
+        };
+        let options = ArchiveOptions {
+            camera_filters: vec!["cli-camera".to_string()],
+            range: Some(ArchiveRange {
+                start_ms: 10,
+                end_ms: 20,
+            }),
+            delete_after_archive: true,
+            ..options()
+        };
+
+        assert_eq!(
+            camera_filters(&config, &options),
+            &["cli-camera".to_string()]
+        );
+        assert_eq!(archive_range(&config, &options).start_ms, 10);
+        assert!(should_delete_after_archive(&config, &options));
+    }
+
+    #[test]
+    fn config_camera_ids_are_used_when_options_do_not_filter() {
+        let config = Config {
+            camera_ids: vec!["configured-camera".to_string()],
+            ..config()
+        };
+        let options = options();
+
+        assert_eq!(
+            camera_filters(&config, &options),
+            &["configured-camera".to_string()]
+        );
+    }
+
+    #[test]
+    fn event_camera_filters_prefer_cli_values() {
+        let config = Config {
+            camera_ids: vec!["configured-camera".to_string()],
+            ..config()
+        };
+        let options = EventArchiveOptions {
+            camera_filters: vec!["cli-camera".to_string()],
+            ..event_options()
+        };
+
+        assert_eq!(
+            event_camera_filters(&config, &options),
+            &["cli-camera".to_string()]
+        );
+    }
+
+    #[test]
+    fn api_key_selection_honors_auth_method() {
+        let api_key_env = format!(
+            "UNIFI_PROTECT_ARCHIVE_ARCHIVER_API_KEY_{}",
+            std::process::id()
+        );
+        std::env::set_var(&api_key_env, "test-api-key");
+        let config = Config {
+            api_key_env: api_key_env.clone(),
+            auth_method: AuthMethod::Auto,
+            ..config()
+        };
+        let password_config = Config {
+            auth_method: AuthMethod::Password,
+            ..config.clone()
+        };
+
+        assert_eq!(api_key(&config).as_deref(), Some("test-api-key"));
+        assert_eq!(api_key(&password_config), None);
+
+        std::env::remove_var(api_key_env);
+    }
+
+    #[test]
+    fn login_required_for_password_or_missing_api_key() {
+        let password_client =
+            ProtectClient::new("https://unifi-console.example.invalid", true, None).unwrap();
+        let api_key_client = ProtectClient::new(
+            "https://unifi-console.example.invalid",
+            true,
+            Some("test-api-key".to_string()),
+        )
+        .unwrap();
+
+        assert!(login_required(
+            &Config {
+                auth_method: AuthMethod::Password,
+                ..config()
+            },
+            &api_key_client
+        ));
+        assert!(login_required(&config(), &password_client));
+        assert!(!login_required(&config(), &api_key_client));
     }
 
     #[test]
@@ -1081,6 +1416,45 @@ mod tests {
     }
 
     #[test]
+    fn event_clip_window_uses_minimum_duration_and_clamps_to_range_end() {
+        let options = EventArchiveOptions {
+            range: ArchiveRange {
+                start_ms: 10_000,
+                end_ms: 50_000,
+            },
+            pre_roll_seconds: 1,
+            post_roll_seconds: 100,
+            ..event_options()
+        };
+
+        let clip = event_clip_window(
+            &event("camera-1", 45_000, Some(44_000)),
+            options.range,
+            &options,
+        )
+        .unwrap();
+
+        assert_eq!(clip.start_ms, 44_000);
+        assert_eq!(clip.end_ms, 50_000);
+    }
+
+    #[test]
+    fn event_clip_window_rejects_empty_camera_or_out_of_range_event() {
+        let options = event_options();
+        let empty_camera = event("", 10_000, Some(20_000));
+        let outside_range = event("camera-1", 130_000, Some(140_000));
+
+        assert_eq!(
+            event_clip_window(&empty_camera, options.range, &options),
+            None
+        );
+        assert_eq!(
+            event_clip_window(&outside_range, options.range, &options),
+            None
+        );
+    }
+
+    #[test]
     fn source_delete_range_starts_at_requested_range_and_ends_at_clip_end() {
         let archive_range = ArchiveRange {
             start_ms: 10_000,
@@ -1096,6 +1470,35 @@ mod tests {
 
         assert_eq!(delete_range.start_ms, 10_000);
         assert_eq!(delete_range.end_ms, 75_000);
+    }
+
+    #[test]
+    fn chunk_ranges_split_range_without_overrunning_end() {
+        let chunks = chunk_ranges(
+            ArchiveRange {
+                start_ms: 0,
+                end_ms: 250,
+            },
+            100,
+        );
+
+        assert_eq!(
+            chunks,
+            vec![
+                ArchiveRange {
+                    start_ms: 0,
+                    end_ms: 100,
+                },
+                ArchiveRange {
+                    start_ms: 100,
+                    end_ms: 200,
+                },
+                ArchiveRange {
+                    start_ms: 200,
+                    end_ms: 250,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -1152,6 +1555,82 @@ mod tests {
     }
 
     #[test]
+    fn event_clip_windows_do_not_merge_different_cameras_or_distant_events() {
+        let options = EventArchiveOptions {
+            merge_gap_seconds: 1,
+            ..event_options()
+        };
+        let events = vec![
+            event("camera-2", 60_000, Some(61_000)),
+            event("camera-1", 10_000, Some(11_000)),
+            event("camera-1", 80_000, Some(81_000)),
+        ];
+
+        let clips = event_clip_windows(&events, options.range, &options);
+
+        assert_eq!(clips.len(), 3);
+        assert_eq!(clips[0].camera_id, "camera-1");
+        assert_eq!(clips[1].camera_id, "camera-1");
+        assert_eq!(clips[2].camera_id, "camera-2");
+    }
+
+    #[test]
+    fn event_type_and_smart_detect_type_counts_group_events_for_dry_run() {
+        let mut person = event("camera-1", 10_000, Some(20_000));
+        person.smart_detect_types = vec!["person".to_string()];
+        let mut vehicle = event("camera-1", 30_000, Some(40_000));
+        vehicle.smart_detect_types = vec!["vehicle".to_string(), "person".to_string()];
+        let mut motion = event("camera-1", 50_000, Some(60_000));
+        motion.event_type = Some("motion".to_string());
+        motion.smart_detect_types = Vec::new();
+        let events = vec![person, vehicle, motion];
+
+        assert_eq!(
+            event_type_counts(&events),
+            BTreeMap::from([
+                ("motion".to_string(), 1),
+                ("smartDetectZone".to_string(), 2)
+            ])
+        );
+        assert_eq!(
+            smart_detect_type_counts(&events),
+            BTreeMap::from([("person".to_string(), 2), ("vehicle".to_string(), 1)])
+        );
+    }
+
+    #[test]
+    fn event_type_counts_label_missing_types_as_unknown() {
+        let mut unknown = event("camera-1", 10_000, Some(20_000));
+        unknown.event_type = None;
+
+        assert_eq!(
+            event_type_counts(&[unknown]),
+            BTreeMap::from([("unknown".to_string(), 1)])
+        );
+    }
+
+    #[test]
+    fn transient_pending_archive_errors_are_retryable() {
+        let error = anyhow!("fetch pending video archives failed with HTTP 502 Bad Gateway");
+
+        assert!(is_transient_pending_archive_error(&error));
+    }
+
+    #[test]
+    fn timeout_pending_archive_errors_are_retryable() {
+        let error = anyhow!("operation timed out while fetching pending archives");
+
+        assert!(is_transient_pending_archive_error(&error));
+    }
+
+    #[test]
+    fn permission_pending_archive_errors_are_not_retryable() {
+        let error = anyhow!("fetch pending video archives was rejected by Protect");
+
+        assert!(!is_transient_pending_archive_error(&error));
+    }
+
+    #[test]
     fn default_archive_range_uses_lookback_and_minimum_age() {
         let config = Config {
             lookback_seconds: 60,
@@ -1201,6 +1680,20 @@ mod tests {
                     end_ms: 1000,
                 },
                 15_000,
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn segment_count_ignores_invalid_segment_lengths() {
+        assert_eq!(
+            segment_count(
+                ArchiveRange {
+                    start_ms: 0,
+                    end_ms: 60_000,
+                },
+                0,
             ),
             0
         );
